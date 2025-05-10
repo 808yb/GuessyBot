@@ -1,4 +1,5 @@
 import random
+import os
 import logging
 import telegram
 import requests
@@ -12,7 +13,7 @@ from telegram.ext import (
 )
 
 # Configuration
-TOKEN = "7722727802:AAGflBzylMAyCFGh_4yHwPnDOXbHyRcTCcA"
+TOKEN = os.environ["TOKEN"]
 WORD_LIST_URL = "https://raw.githubusercontent.com/tabatkins/wordle-list/main/words"
 WORD_LENGTH = 5
 MAX_ATTEMPTS = 6
