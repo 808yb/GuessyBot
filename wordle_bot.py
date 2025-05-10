@@ -21,123 +21,129 @@ MAX_ATTEMPTS = 6
 # Default fallback word list (must be 5-letter words!)
 DEFAULT_WORDS = ["APPLE", "BRICK", "CRANE", "DRIVE", "FRUIT", "PLANT", "SHINE", "TRUCK", "VIRUS", "WATER"]
 
-# Dictionary to store ongoing games per user
+# Dictionary to store ongoing games per chat (group or private)
 group_games = {}
+
+# Setup logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Welcome to Wordle Bot! 🌟\n\n"
-        "How to play:\n"
-        "1. Send /play to start a new game\n"
+        "🎉 Welcome to Wordle Bot – Group Edition!\n\n"
+        "🟩🟨⬛ How to play:\n"
+        "1. Type /play to start a game\n"
         "2. Guess a 5-letter word\n"
-        "3. Get feedback using emojis:\n"
-        "   🟩 Correct letter & position\n"
-        "   🟨 Correct letter, wrong position\n"
-        "   ⬛ Letter not in word\n"
-        f"You have {MAX_ATTEMPTS} attempts!\n"
-        "Good luck! 🍀"
+        "3. Work together as a team – 6 total guesses\n\n"
+        "Correct = 🟩, Wrong Position = 🟨, Not in Word = ⬛\n"
+        "Start guessing! 🚀"
     )
 
 async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    group_id = update.message.chat.id
-    response = requests.get(WORD_LIST_URL)
-    words = [word.upper() for word in response.text.splitlines() if len(word) == WORD_LENGTH]
+    chat_id = update.message.chat_id
+
+    try:
+        response = requests.get(WORD_LIST_URL)
+        if response.status_code == 200:
+            words = [word.upper() for word in response.text.splitlines() if len(word) == WORD_LENGTH]
+        else:
+            logging.warning("Word list URL returned non-200 status.")
+            words = []
+    except Exception as e:
+        logging.error(f"Failed to fetch word list: {e}")
+        words = []
+
+    if not words:
+        logging.info("Using fallback word list.")
+        words = DEFAULT_WORDS
+
     target_word = random.choice(words)
-    
-    # Initialize game session for the group
-    group_games[group_id] = {
+
+    group_games[chat_id] = {
         'target_word': target_word,
-        'guessed_words': {},
-        'remaining_attempts': MAX_ATTEMPTS,
+        'attempts': [],
+        'remaining_attempts': MAX_ATTEMPTS
     }
-    
+
     await update.message.reply_text(
-        f"New Wordle game started for the group! 🎯\n"
-        f"Guess the {WORD_LENGTH}-letter word. The whole team has {MAX_ATTEMPTS} attempts."
+        f"🎯 A new Wordle game has started for this group!\n"
+        f"Guess a {WORD_LENGTH}-letter word.\nYou have {MAX_ATTEMPTS} total attempts as a team. Good luck!"
     )
 
 async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    group_id = update.message.chat.id
-    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
     guess = update.message.text.upper().strip()
-    
-    if group_id not in group_games:
+    user_name = update.message.from_user.first_name
+
+    if chat_id not in group_games:
         await update.message.reply_text("Send /play to start a new game first!")
         return
-    
-    game = group_games[group_id]
-    
+
     if len(guess) != WORD_LENGTH:
         await update.message.reply_text(f"Please enter a {WORD_LENGTH}-letter word.")
         return
     if not guess.isalpha():
         await update.message.reply_text("Please enter letters only.")
         return
-    
-    if user_id in game['guessed_words']:
-        await update.message.reply_text("You've already guessed! Wait for your turn.")
-        return
-    
-    # Record the guess and check remaining attempts
-    game['guessed_words'][user_id] = guess
+
+    game = group_games[chat_id]
+    game['attempts'].append((user_name, guess))
     game['remaining_attempts'] -= 1
-    
+
     feedback = generate_feedback(guess, game['target_word'])
-    remaining_attempts = game['remaining_attempts']
-    
-    response = f"Player {update.message.from_user.first_name}'s guess: {feedback}\n"
+    attempts_left = game['remaining_attempts']
+
+    response = (
+        f"🧠 {user_name} guessed: {guess}\n"
+        f"Attempt {len(game['attempts'])}/{MAX_ATTEMPTS}:\n"
+        f"{feedback}\n"
+    )
+
     if guess == game['target_word']:
-        response += "\n🎉 Congratulations! The word was guessed! 🎉"
-        del group_games[group_id]
-    elif remaining_attempts == 0:
-        response += f"\nGame Over! The word was: {game['target_word']}"
-        del group_games[group_id]
+        response += f"\n🎉 {user_name} found the word! You all win! 🏆"
+        del group_games[chat_id]
+    elif attempts_left == 0:
+        response += f"\n❌ Game Over! The word was: {game['target_word']}"
+        del group_games[chat_id]
     else:
-        response += f"\nRemaining attempts: {remaining_attempts}"
+        response += f"Remaining attempts: {attempts_left}"
 
     await update.message.reply_text(response)
 
 def generate_feedback(guess: str, target: str) -> str:
-    feedback = []
-    target_letters = list(target)
-    
-    # First pass for correct letters
-    for g, t in zip(guess, target):
-        if g == t:
-            feedback.append("🟩")
-            target_letters.remove(g)
-        else:
-            feedback.append(" ")
-    
-    # Second pass for misplaced letters
-    for i, g in enumerate(guess):
-        if feedback[i] == " ":
-            if g in target_letters:
-                feedback[i] = "🟨"
-                target_letters.remove(g)
-            else:
-                feedback[i] = "⬛"
-    
+    feedback = ["⬛"] * len(guess)
+    target_chars = list(target)
+
+    # First pass: correct letter and position
+    for i in range(len(guess)):
+        if guess[i] == target[i]:
+            feedback[i] = "🟩"
+            target_chars[i] = None  # avoid reuse
+
+    # Second pass: correct letter, wrong position
+    for i in range(len(guess)):
+        if feedback[i] == "🟩":
+            continue
+        if guess[i] in target_chars:
+            feedback[i] = "🟨"
+            target_chars[target_chars.index(guess[i])] = None
+
     return "".join(feedback)
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"Error occurred: {context.error}")
-    if isinstance(context.error, telegram.error.Conflict):
-        print("Another bot instance is running! Terminating...")
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error("Exception while handling an update:", exc_info=context.error)
 
 def main() -> None:
-    # Create application instance
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("play", new_game))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_guess))
-    
-    # Add error handler
     application.add_error_handler(error_handler)
 
-    # Start polling
+    logging.info("Bot is running...")
     application.run_polling()
 
 if __name__ == "__main__":
